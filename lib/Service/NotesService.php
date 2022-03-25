@@ -7,18 +7,15 @@
 
 namespace OCA\Bookmarks\Service;
 
-use OCA\Bookmarks\Exception\AlreadyExistsError;
-use OCA\Bookmarks\Exception\UnsupportedOperation;
+use OCA\Bookmarks\Db\Bookmark;
 use OCA\Bookmarks\Exception\UrlParseError;
-use OCA\Bookmarks\Exception\UserLimitExceededError;
 use OCA\Notes\Service\Note;
 use OCA\Notes\Service\NotesService as OriginalNotesService;
 use OCP\AppFramework\Db\DoesNotExistException;
-use OCP\AppFramework\Db\MultipleObjectsReturnedException;
 use OCP\Collaboration\Resources\IManager;
+use OCP\Collaboration\Resources\ResourceException;
 use OCP\IUser;
 use OCP\IUserSession;
-use Psr\Log\LoggerInterface;
 
 class NotesService {
 	private const REGEX_URL = "%(https?|ftp)://(\S+(:\S*)?@|\d{1,3}(\.\d{1,3}){3}|(([a-z\d\x{00a1}-\x{ffff}]+-?)*[a-z\d\x{00a1}-\x{ffff}]+)(\.([a-z\d\x{00a1}-\x{ffff}]+-?)*[a-z\d\x{00a1}-\x{ffff}]+)*(\.[a-z\x{00a1}-\x{ffff}]{2,6}))(:\d+)?([^\s]*)?%ium";
@@ -35,16 +32,11 @@ class NotesService {
 	 * @var IUserSession
 	 */
 	private $session;
-	/**
-	 * @var LoggerInterface
-	 */
-	private $logger;
 
-	public function __construct(BookmarkService $bookmarks, IManager $resourceManager, IUserSession $session, LoggerInterface $logger) {
+	public function __construct(BookmarkService $bookmarks, IManager $resourceManager, IUserSession $session) {
 		$this->bookmarks = $bookmarks;
 		$this->resourceManager = $resourceManager;
 		$this->session = $session;
-		$this->logger = $logger;
 	}
 
 	/**
@@ -60,25 +52,27 @@ class NotesService {
 
 			foreach ($matches[0] as $url) {
 				try {
-					$this->bookmarks->findByUrl($user->getUID(), $url);
-					continue; // If the bookmark exists already, do nothing.
-				} catch (UrlParseError $e) {
-					continue;
-				} catch (DoesNotExistException $e) {
-					// noop
-				}
-				try {
-					$bookmark = $this->bookmarks->create($user->getUID(), $url);
-				} catch (AlreadyExistsError|UnsupportedOperation|UrlParseError|UserLimitExceededError|DoesNotExistException|MultipleObjectsReturnedException $e) {
+					$bookmark = $this->bookmarks->findByUrl($user->getUID(), $url);
+				} catch (UrlParseError|DoesNotExistException $e) {
 					continue;
 				}
-				$bookmarkResource = $this->resourceManager->createResource('bookmarks', (string)$bookmark->getId());
-				$noteResource = $this->resourceManager->createResource('file', (string)$note->getId());
-				$collection = $this->resourceManager->newCollection($note->getTitle());
-				$collection->addResource($bookmarkResource);
-				$collection->addResource($noteResource);
+				$this->linkBookmarkWithNote($user, $bookmark, $note);
 			}
 		}
+	}
+
+	public function linkBookmarkWithNote(IUser $user, Bookmark $bookmark, Note $note) : void {
+		try {
+			$this->resourceManager->getResourceForUser('bookmarks', (string)$bookmark->getId(), $user);
+			return;
+		} catch (ResourceException $e) {
+			// noop
+		}
+		$bookmarkResource = $this->resourceManager->createResource('bookmarks', (string)$bookmark->getId());
+		$noteResource = $this->resourceManager->createResource('file', (string)$note->getId());
+		$collection = $this->resourceManager->newCollection($note->getTitle());
+		$collection->addResource($bookmarkResource);
+		$collection->addResource($noteResource);
 	}
 
 	/**
